@@ -36,53 +36,67 @@ const COLORS = [
 const AVATARS = ['🚀', '👾', '🦊', '🐱', '🐶', '🦁', '🐯', '🐼', '🐨', '🐸'];
 
 // Sound Utility
-const playSound = (type: 'play' | 'error' | 'win' | 'start') => {
+const playSound = (type: 'play' | 'error' | 'win' | 'lose' | 'start') => {
   const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-  const osc = ctx.createOscillator();
-  const gain = ctx.createGain();
-
-  osc.connect(gain);
-  gain.connect(ctx.destination);
+  
+  const playTone = (freq: number, type: OscillatorType, start: number, duration: number, volume: number = 0.1) => {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, start);
+    gain.gain.setValueAtTime(volume, start);
+    gain.gain.exponentialRampToValueAtTime(0.01, start + duration);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(start);
+    osc.stop(start + duration);
+  };
 
   const now = ctx.currentTime;
 
   switch (type) {
     case 'play':
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(440, now);
-      osc.frequency.exponentialRampToValueAtTime(880, now + 0.1);
-      gain.gain.setValueAtTime(0.1, now);
-      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
-      osc.start(now);
-      osc.stop(now + 0.1);
+      // Card "whoosh" sound
+      const noise = ctx.createBufferSource();
+      const bufferSize = ctx.sampleRate * 0.1;
+      const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < bufferSize; i++) {
+        data[i] = Math.random() * 2 - 1;
+      }
+      noise.buffer = buffer;
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(1000, now);
+      filter.frequency.exponentialRampToValueAtTime(100, now + 0.1);
+      const noiseGain = ctx.createGain();
+      noiseGain.gain.setValueAtTime(0.1, now);
+      noiseGain.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
+      noise.connect(filter);
+      filter.connect(noiseGain);
+      noiseGain.connect(ctx.destination);
+      noise.start(now);
       break;
     case 'error':
-      osc.type = 'square';
-      osc.frequency.setValueAtTime(150, now);
-      osc.frequency.linearRampToValueAtTime(100, now + 0.2);
-      gain.gain.setValueAtTime(0.1, now);
-      gain.gain.linearRampToValueAtTime(0.01, now + 0.2);
-      osc.start(now);
-      osc.stop(now + 0.2);
+      playTone(150, 'square', now, 0.2, 0.1);
+      playTone(100, 'square', now + 0.1, 0.2, 0.1);
       break;
     case 'start':
-      osc.type = 'triangle';
-      osc.frequency.setValueAtTime(523.25, now); // C5
-      osc.frequency.setValueAtTime(659.25, now + 0.1); // E5
-      osc.frequency.setValueAtTime(783.99, now + 0.2); // G5
-      gain.gain.setValueAtTime(0.1, now);
-      gain.gain.linearRampToValueAtTime(0.01, now + 0.4);
-      osc.start(now);
-      osc.stop(now + 0.4);
+      playTone(523.25, 'triangle', now, 0.1, 0.1);
+      playTone(659.25, 'triangle', now + 0.1, 0.1, 0.1);
+      playTone(783.99, 'triangle', now + 0.2, 0.2, 0.1);
       break;
     case 'win':
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(523.25, now);
-      osc.frequency.exponentialRampToValueAtTime(1046.50, now + 0.5);
-      gain.gain.setValueAtTime(0.1, now);
-      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.5);
-      osc.start(now);
-      osc.stop(now + 0.5);
+      // Happy arpeggio
+      [523.25, 659.25, 783.99, 1046.50].forEach((f, i) => {
+        playTone(f, 'sine', now + i * 0.1, 0.5, 0.1);
+      });
+      break;
+    case 'lose':
+      // Sad descending tone
+      playTone(392.00, 'sawtooth', now, 0.3, 0.05);
+      playTone(349.23, 'sawtooth', now + 0.3, 0.3, 0.05);
+      playTone(329.63, 'sawtooth', now + 0.6, 0.6, 0.05);
       break;
   }
 };
@@ -128,19 +142,27 @@ export default function App() {
     socket.onmessage = (event) => {
       const message = JSON.parse(event.data);
       if (message.type === 'ROOM_STATE') {
-        const oldState = gameState;
-        setGameState(message.payload);
+        setGameState(prev => {
+          const newState = message.payload;
+          
+          // Sound effects for state changes
+          if (prev) {
+            if (newState.lastPlayedCard !== prev.lastPlayedCard) {
+              playSound('play');
+            }
+            if (newState.status === 'finished' && prev.status !== 'finished') {
+              // Check if I won or lost
+              const myCardsCount = newState.myCards.length;
+              if (myCardsCount === 0) {
+                playSound('win');
+              } else {
+                playSound('lose');
+              }
+            }
+          }
+          return newState;
+        });
         setError(null);
-
-        // Sound effects for state changes
-        if (oldState) {
-          if (message.payload.lastPlayedCard !== oldState.lastPlayedCard) {
-            playSound('play');
-          }
-          if (message.payload.status === 'finished' && oldState.status !== 'finished') {
-            playSound('win');
-          }
-        }
       } else if (message.type === 'ERROR') {
         setError(message.payload);
         playSound('error');
